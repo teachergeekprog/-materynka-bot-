@@ -212,18 +212,28 @@ async def get_child_name(message: Message, state: FSMContext):
 async def get_child_age(callback: CallbackQuery, state: FSMContext):
     age = callback.data
     if age not in AGE_OPTIONS:
-        await callback.answer("⚠️ Оберіть варіант з кнопок!")
+        try:
+            await callback.answer("⚠️ Оберіть варіант з кнопок!")
+        except:
+            pass
         return
     
     await state.update_data(child_age=age)
-    await callback.answer()
     
-    await callback.message.answer(
-        "📋 *Питання 5 з 7*\n\n"
-        "💻 Чи має дитина *досвід у програмуванні / IT*?",
-        reply_markup=kb_single(EXPERIENCE_OPTIONS)
-    )
-    await state.set_state(Survey.experience)
+    try:
+        await callback.answer()
+    except:
+        pass
+    
+    try:
+        await callback.message.answer(
+            "📋 *Питання 5 з 7*\n\n"
+            "💻 Чи має дитина *досвід у програмуванні / IT*?",
+            reply_markup=kb_single(EXPERIENCE_OPTIONS)
+        )
+        await state.set_state(Survey.experience)
+    except Exception as e:
+        logger.error(f"Помилка переходу до питання 5: {e}")
 
 
 # ========== 5. Досвід ==========
@@ -231,20 +241,30 @@ async def get_child_age(callback: CallbackQuery, state: FSMContext):
 async def get_experience(callback: CallbackQuery, state: FSMContext):
     exp = callback.data
     if exp not in EXPERIENCE_OPTIONS:
-        await callback.answer("⚠️ Оберіть варіант з кнопок!")
+        try:
+            await callback.answer("⚠️ Оберіть варіант з кнопок!")
+        except:
+            pass
         return
     
     await state.update_data(experience=exp, direction_selected=[])
-    await callback.answer()
     
-    await callback.message.answer(
-        "📋 *Питання 6 з 7*\n\n"
-        "🎯 *Блок 3/3: Курс та час*\n\n"
-        "Який *напрямок інтенсивів* вас цікавить найбільше?\n\n"
-        "_Можна обрати кілька варіантів — натискайте по черзі. Коли оберете все — натисніть «✅ Готово»._",
-        reply_markup=kb_multi(DIRECTION_OPTIONS, [])
-    )
-    await state.set_state(Survey.direction)
+    try:
+        await callback.answer()
+    except:
+        pass
+    
+    try:
+        await callback.message.answer(
+            "📋 *Питання 6 з 7*\n\n"
+            "🎯 *Блок 3/3: Курс та час*\n\n"
+            "Який *напрямок інтенсивів* вас цікавить найбільше?\n\n"
+            "_Можна обрати кілька варіантів — натискайте по черзі. Коли оберете все — натисніть «✅ Готово»._",
+            reply_markup=kb_multi(DIRECTION_OPTIONS, [])
+        )
+        await state.set_state(Survey.direction)
+    except Exception as e:
+        logger.error(f"Помилка переходу до питання 6: {e}")
 
 
 # ========== 6. Напрямок (множинний вибір) ==========
@@ -256,24 +276,37 @@ async def get_direction(callback: CallbackQuery, state: FSMContext):
     
     if choice == "DONE_MULTI":
         if not selected:
-            await callback.answer("⚠️ Оберіть хоча б один варіант!", show_alert=True)
+            try:
+                await callback.answer("⚠️ Оберіть хоча б один варіант!", show_alert=True)
+            except:
+                pass
             return
         
         direction = ", ".join(selected)
         await state.update_data(direction=direction, time_selected=[])
-        await callback.answer()
         
-        await callback.message.answer(
-            "📋 *Питання 7 з 7*\n\n"
-            "🕐 *Зручний час для занять?*\n\n"
-            "_Можна обрати кілька варіантів._",
-            reply_markup=kb_multi(TIME_OPTIONS, [])
-        )
-        await state.set_state(Survey.time)
+        try:
+            await callback.answer()
+        except:
+            pass
+        
+        try:
+            await callback.message.answer(
+                "📋 *Питання 7 з 7*\n\n"
+                "🕐 *Зручний час для занять?*\n\n"
+                "_Можна обрати кілька варіантів._",
+                reply_markup=kb_multi(TIME_OPTIONS, [])
+            )
+            await state.set_state(Survey.time)
+        except Exception as e:
+            logger.error(f"Помилка переходу до питання 7: {e}")
         return
     
     if choice not in DIRECTION_OPTIONS:
-        await callback.answer()
+        try:
+            await callback.answer()
+        except:
+            pass
         return
     
     if choice in selected:
@@ -282,7 +315,11 @@ async def get_direction(callback: CallbackQuery, state: FSMContext):
         selected.append(choice)
     
     await state.update_data(direction_selected=selected)
-    await callback.answer()
+    
+    try:
+        await callback.answer()
+    except:
+        pass
     
     try:
         await callback.message.edit_reply_markup(
@@ -301,21 +338,30 @@ async def get_time(callback: CallbackQuery, state: FSMContext):
     
     if choice == "DONE_MULTI":
         if not selected:
-            await callback.answer("⚠️ Оберіть хоча б один варіант!", show_alert=True)
+            try:
+                await callback.answer("⚠️ Оберіть хоча б один варіант!", show_alert=True)
+            except:
+                pass
             return
         
         time = ", ".join(selected)
         await state.update_data(time=time)
-        await callback.answer()
         
-        # Завершуємо опитування
+        try:
+            await callback.answer()
+        except:
+            pass
+        
         all_data = await state.get_data()
         await finish_survey(callback.message, all_data)
         await state.clear()
         return
     
     if choice not in TIME_OPTIONS:
-        await callback.answer()
+        try:
+            await callback.answer()
+        except:
+            pass
         return
     
     if choice in selected:
@@ -324,7 +370,11 @@ async def get_time(callback: CallbackQuery, state: FSMContext):
         selected.append(choice)
     
     await state.update_data(time_selected=selected)
-    await callback.answer()
+    
+    try:
+        await callback.answer()
+    except:
+        pass
     
     try:
         await callback.message.edit_reply_markup(
@@ -332,7 +382,6 @@ async def get_time(callback: CallbackQuery, state: FSMContext):
         )
     except Exception as e:
         logger.warning(f"Edit failed: {e}")
-
 
 # ========== ЗАВЕРШЕННЯ ==========
 async def finish_survey(message: Message, data: Dict):
