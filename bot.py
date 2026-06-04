@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+import asyncio
 from datetime import datetime
 from typing import Dict, List
 
@@ -9,7 +10,7 @@ from google.oauth2.service_account import Credentials
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import (
     Message, CallbackQuery,
-    InlineKeyboardButton, InlineKeyboardMarkup
+    InlineKeyboardButton, InlineKeyboardMarkup, Update
 )
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -18,7 +19,6 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiohttp import web
-import asyncio
 
 # ============ НАЛАШТУВАННЯ ============
 SURVEY_BOT_TOKEN = os.getenv("SURVEY_BOT_TOKEN", "")
@@ -31,11 +31,10 @@ WEBHOOK_URL = os.getenv("WEBHOOK_URL", "")
 PORT = int(os.getenv("PORT", 10000))
 # ======================================
 
-# Логування
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Підключаємось до Google Sheets
+
 def get_google_sheet():
     scopes = [
         "https://www.googleapis.com/auth/spreadsheets",
@@ -50,7 +49,7 @@ def get_google_sheet():
     client = gspread.authorize(creds)
     return client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
 
-# Стани опитування
+
 class Survey(StatesGroup):
     parent_name = State()
     phone = State()
@@ -60,7 +59,8 @@ class Survey(StatesGroup):
     direction = State()
     time = State()
 
-# Варіанти для кнопок
+
+# Варіанти з короткими ID для callback_data
 AGE_OPTIONS = ["7", "8", "9", "10", "11", "12", "13", "14", "15"]
 
 EXPERIENCE_OPTIONS = [
@@ -84,7 +84,7 @@ TIME_OPTIONS = [
     "Зручно в будь-який час (Ми вільні)"
 ]
 
-# Створюємо бота
+
 bot = Bot(
     token=SURVEY_BOT_TOKEN,
     default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN)
@@ -92,28 +92,63 @@ bot = Bot(
 dp = Dispatcher(storage=MemoryStorage())
 
 
-# ========== КЛАВІАТУРИ ==========
-def kb_single(options: List[str]) -> InlineKeyboardMarkup:
-    """Клавіатура з одним вибором"""
-    if len(options) <= 4:
-        keyboard = [[InlineKeyboardButton(text=opt, callback_data=opt)] for opt in options]
-    else:
-        # По 3 кнопки в ряд (для віку)
-        keyboard = []
-        for i in range(0, len(options), 3):
-            row = [InlineKeyboardButton(text=opt, callback_data=opt) for opt in options[i:i+3]]
-            keyboard.append(row)
-    return InlineKeyboardMarkup(inline_keyboard=keyboard)
-
-
-def kb_multi(options: List[str], selected: List[str]) -> InlineKeyboardMarkup:
-    """Клавіатура з множинним вибором + кнопка Готово"""
+def kb_age() -> InlineKeyboardMarkup:
+    """Клавіатура для віку (короткі callback_data)"""
     keyboard = []
-    for opt in options:
-        prefix = "✅ " if opt in selected else "⬜ "
-        keyboard.append([InlineKeyboardButton(text=prefix + opt, callback_data=opt)])
-    keyboard.append([InlineKeyboardButton(text="✅ Готово", callback_data="DONE_MULTI")])
+    for i in range(0, len(AGE_OPTIONS), 3):
+        row = [
+            InlineKeyboardButton(text=opt, callback_data=f"age_{opt}")
+            for opt in AGE_OPTIONS[i:i+3]
+        ]
+        keyboard.append(row)
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+def kb_experience() -> InlineKeyboardMarkup:
+    """Клавіатура для досвіду"""
+    keyboard = [
+        [InlineKeyboardButton(text=opt, callback_data=f"exp_{i}")]
+        for i, opt in enumerate(EXPERIENCE_OPTIONS)
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+def kb_direction(selected: List[int]) -> InlineKeyboardMarkup:
+    """Клавіатура для напрямку (множинний вибір)"""
+    keyboard = []
+    for i, opt in enumerate(DIRECTION_OPTIONS):
+        prefix = "✅ " if i in selected else "⬜ "
+        keyboard.append([
+            InlineKeyboardButton(text=prefix + opt, callback_data=f"dir_{i}")
+        ])
+    keyboard.append([
+        InlineKeyboardButton(text="✅ Готово", callback_data="dir_done")
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+def kb_time(selected: List[int]) -> InlineKeyboardMarkup:
+    """Клавіатура для часу (множинний вибір)"""
+    keyboard = []
+    for i, opt in enumerate(TIME_OPTIONS):
+        prefix = "✅ " if i in selected else "⬜ "
+        keyboard.append([
+            InlineKeyboardButton(text=prefix + opt, callback_data=f"time_{i}")
+        ])
+    keyboard.append([
+        InlineKeyboardButton(text="✅ Готово", callback_data="time_done")
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+async def safe_answer(callback: CallbackQuery, text: str = None, alert: bool = False):
+    try:
+        if text:
+            await callback.answer(text, show_alert=alert)
+        else:
+            await callback.answer()
+    except Exception as e:
+        logger.warning(f"Callback answer failed: {e}")
 
 
 # ========== /start ==========
@@ -143,9 +178,7 @@ async def cmd_start(message: Message, state: FSMContext):
 @dp.message(Command("cancel"))
 async def cmd_cancel(message: Message, state: FSMContext):
     await state.clear()
-    await message.answer(
-        "❌ Опитування скасовано.\n\nЩоб почати знову — введіть /start"
-    )
+    await message.answer("❌ Опитування скасовано.\n\nЩоб почати знову — введіть /start")
 
 
 # ========== 1. Ім'я батька ==========
@@ -173,10 +206,7 @@ async def get_phone(message: Message, state: FSMContext):
     cleaned = ''.join(c for c in phone if c.isdigit() or c == '+')
     
     if len(cleaned) < 10:
-        await message.answer(
-            "⚠️ Введіть коректний номер телефону\n"
-            "(наприклад: +380501234567)"
-        )
+        await message.answer("⚠️ Введіть коректний номер телефону\n(наприклад: +380501234567)")
         return
     
     await state.update_data(phone=phone)
@@ -202,34 +232,28 @@ async def get_child_name(message: Message, state: FSMContext):
     await message.answer(
         "📋 *Питання 4 з 7*\n\n"
         "🎂 Скільки *років* дитині?",
-        reply_markup=kb_single(AGE_OPTIONS)
+        reply_markup=kb_age()
     )
     await state.set_state(Survey.child_age)
 
 
-# ========== 4. Вік дитини ==========
-@dp.callback_query(Survey.child_age)
+# ========== 4. Вік ==========
+@dp.callback_query(Survey.child_age, F.data.startswith("age_"))
 async def get_child_age(callback: CallbackQuery, state: FSMContext):
-    age = callback.data
+    age = callback.data.replace("age_", "")
+    
     if age not in AGE_OPTIONS:
-        try:
-            await callback.answer("⚠️ Оберіть варіант з кнопок!")
-        except:
-            pass
+        await safe_answer(callback, "⚠️ Невідомий вік!")
         return
     
     await state.update_data(child_age=age)
-    
-    try:
-        await callback.answer()
-    except:
-        pass
+    await safe_answer(callback)
     
     try:
         await callback.message.answer(
             "📋 *Питання 5 з 7*\n\n"
             "💻 Чи має дитина *досвід у програмуванні / IT*?",
-            reply_markup=kb_single(EXPERIENCE_OPTIONS)
+            reply_markup=kb_experience()
         )
         await state.set_state(Survey.experience)
     except Exception as e:
@@ -237,22 +261,17 @@ async def get_child_age(callback: CallbackQuery, state: FSMContext):
 
 
 # ========== 5. Досвід ==========
-@dp.callback_query(Survey.experience)
+@dp.callback_query(Survey.experience, F.data.startswith("exp_"))
 async def get_experience(callback: CallbackQuery, state: FSMContext):
-    exp = callback.data
-    if exp not in EXPERIENCE_OPTIONS:
-        try:
-            await callback.answer("⚠️ Оберіть варіант з кнопок!")
-        except:
-            pass
+    try:
+        idx = int(callback.data.replace("exp_", ""))
+        exp = EXPERIENCE_OPTIONS[idx]
+    except (ValueError, IndexError):
+        await safe_answer(callback, "⚠️ Невірна відповідь!")
         return
     
     await state.update_data(experience=exp, direction_selected=[])
-    
-    try:
-        await callback.answer()
-    except:
-        pass
+    await safe_answer(callback)
     
     try:
         await callback.message.answer(
@@ -260,146 +279,125 @@ async def get_experience(callback: CallbackQuery, state: FSMContext):
             "🎯 *Блок 3/3: Курс та час*\n\n"
             "Який *напрямок інтенсивів* вас цікавить найбільше?\n\n"
             "_Можна обрати кілька варіантів — натискайте по черзі. Коли оберете все — натисніть «✅ Готово»._",
-            reply_markup=kb_multi(DIRECTION_OPTIONS, [])
+            reply_markup=kb_direction([])
         )
         await state.set_state(Survey.direction)
     except Exception as e:
         logger.error(f"Помилка переходу до питання 6: {e}")
 
 
-# ========== 6. Напрямок (множинний вибір) ==========
-@dp.callback_query(Survey.direction)
+# ========== 6. Напрямок (множинний) ==========
+@dp.callback_query(Survey.direction, F.data.startswith("dir_"))
 async def get_direction(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     selected = data.get("direction_selected", [])
-    choice = callback.data
+    action = callback.data.replace("dir_", "")
     
-    if choice == "DONE_MULTI":
+    if action == "done":
         if not selected:
-            try:
-                await callback.answer("⚠️ Оберіть хоча б один варіант!", show_alert=True)
-            except:
-                pass
+            await safe_answer(callback, "⚠️ Оберіть хоча б один варіант!", alert=True)
             return
         
-        direction = ", ".join(selected)
+        direction = ", ".join([DIRECTION_OPTIONS[i] for i in selected])
         await state.update_data(direction=direction, time_selected=[])
-        
-        try:
-            await callback.answer()
-        except:
-            pass
+        await safe_answer(callback)
         
         try:
             await callback.message.answer(
                 "📋 *Питання 7 з 7*\n\n"
                 "🕐 *Зручний час для занять?*\n\n"
                 "_Можна обрати кілька варіантів._",
-                reply_markup=kb_multi(TIME_OPTIONS, [])
+                reply_markup=kb_time([])
             )
             await state.set_state(Survey.time)
         except Exception as e:
             logger.error(f"Помилка переходу до питання 7: {e}")
         return
     
-    if choice not in DIRECTION_OPTIONS:
-        try:
-            await callback.answer()
-        except:
-            pass
+    try:
+        idx = int(action)
+        if idx < 0 or idx >= len(DIRECTION_OPTIONS):
+            await safe_answer(callback)
+            return
+    except ValueError:
+        await safe_answer(callback)
         return
     
-    if choice in selected:
-        selected.remove(choice)
+    if idx in selected:
+        selected.remove(idx)
     else:
-        selected.append(choice)
+        selected.append(idx)
     
     await state.update_data(direction_selected=selected)
+    await safe_answer(callback)
     
     try:
-        await callback.answer()
-    except:
-        pass
-    
-    try:
-        await callback.message.edit_reply_markup(
-            reply_markup=kb_multi(DIRECTION_OPTIONS, selected)
-        )
+        await callback.message.edit_reply_markup(reply_markup=kb_direction(selected))
     except Exception as e:
-        logger.warning(f"Edit failed: {e}")
+        logger.warning(f"Edit direction failed: {e}")
 
 
-# ========== 7. Час (множинний вибір) ==========
-@dp.callback_query(Survey.time)
+# ========== 7. Час (множинний) ==========
+@dp.callback_query(Survey.time, F.data.startswith("time_"))
 async def get_time(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     selected = data.get("time_selected", [])
-    choice = callback.data
+    action = callback.data.replace("time_", "")
     
-    if choice == "DONE_MULTI":
+    if action == "done":
         if not selected:
-            try:
-                await callback.answer("⚠️ Оберіть хоча б один варіант!", show_alert=True)
-            except:
-                pass
+            await safe_answer(callback, "⚠️ Оберіть хоча б один варіант!", alert=True)
             return
         
-        time = ", ".join(selected)
+        time = ", ".join([TIME_OPTIONS[i] for i in selected])
         await state.update_data(time=time)
-        
-        try:
-            await callback.answer()
-        except:
-            pass
+        await safe_answer(callback)
         
         all_data = await state.get_data()
         await finish_survey(callback.message, all_data)
         await state.clear()
         return
     
-    if choice not in TIME_OPTIONS:
-        try:
-            await callback.answer()
-        except:
-            pass
+    try:
+        idx = int(action)
+        if idx < 0 or idx >= len(TIME_OPTIONS):
+            await safe_answer(callback)
+            return
+    except ValueError:
+        await safe_answer(callback)
         return
     
-    if choice in selected:
-        selected.remove(choice)
+    if idx in selected:
+        selected.remove(idx)
     else:
-        selected.append(choice)
+        selected.append(idx)
     
     await state.update_data(time_selected=selected)
+    await safe_answer(callback)
     
     try:
-        await callback.answer()
-    except:
-        pass
-    
-    try:
-        await callback.message.edit_reply_markup(
-            reply_markup=kb_multi(TIME_OPTIONS, selected)
-        )
+        await callback.message.edit_reply_markup(reply_markup=kb_time(selected))
     except Exception as e:
-        logger.warning(f"Edit failed: {e}")
+        logger.warning(f"Edit time failed: {e}")
+
 
 # ========== ЗАВЕРШЕННЯ ==========
 async def finish_survey(message: Message, data: Dict):
-    # Зберігаємо в таблицю
     try:
         save_to_sheet(data)
     except Exception as e:
         logger.error(f"Помилка збереження в таблицю: {e}")
     
-    # Дякуємо клієнту
-    await message.answer(
-        "✅ *Дякуємо за заявку!* 💙\n\n"
-        "Ваша заявка успішно надіслана. Наш менеджер зв'яжеться з вами найближчим часом для уточнення деталей.\n\n"
-        "До зустрічі на заняттях! 🚀\n\n"
-        "_Щоб подати нову заявку — /start_"
-    )
+    try:
+        await message.answer(
+            "✅ *Дякуємо за заявку!* 💙\n\n"
+            "Ваша заявка успішно надіслана. Наш менеджер зв'яжеться з вами найближчим часом для уточнення деталей.\n\n"
+            "До зустрічі на заняттях! 🚀\n\n"
+            "_Щоб подати нову заявку — /start_"
+        )
+    except Exception as e:
+        logger.error(f"Помилка фінального повідомлення: {e}")
     
-    # Сповіщаємо адміна
     try:
         await notify_admin(data)
     except Exception as e:
@@ -407,7 +405,6 @@ async def finish_survey(message: Message, data: Dict):
 
 
 def save_to_sheet(data: Dict):
-    """Запис заявки в Google Sheets"""
     sheet = get_google_sheet()
     timestamp = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
     
@@ -425,7 +422,6 @@ def save_to_sheet(data: Dict):
 
 
 async def notify_admin(data: Dict):
-    """Сповіщення адміну через старий бот"""
     msg = (
         "🔔 *НОВА ЗАЯВКА* (Telegram-бот) 🤖\n"
         "━━━━━━━━━━━━━━━━━\n\n"
@@ -448,7 +444,6 @@ async def notify_admin(data: Dict):
         await alert_bot.session.close()
 
 
-# ========== ЗАПУСК ЧЕРЕЗ WEBHOOK ==========
 async def on_startup(app):
     await bot.set_webhook(f"{WEBHOOK_URL}{WEBHOOK_PATH}", drop_pending_updates=True)
     logger.info(f"✅ Webhook встановлено: {WEBHOOK_URL}{WEBHOOK_PATH}")
@@ -460,10 +455,12 @@ async def on_shutdown(app):
 
 
 async def handle_webhook(request):
-    update = await request.json()
-    from aiogram.types import Update
-    update_obj = Update(**update)
-    await dp.feed_update(bot, update_obj)
+    try:
+        update_data = await request.json()
+        update_obj = Update(**update_data)
+        await dp.feed_update(bot, update_obj)
+    except Exception as e:
+        logger.error(f"Webhook error: {e}")
     return web.Response(text="ok")
 
 
