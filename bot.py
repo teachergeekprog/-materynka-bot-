@@ -408,7 +408,7 @@ def save_to_sheet(data: Dict):
     sheet = get_google_sheet()
     timestamp = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
     
-    sheet.append_row([
+    row_data = [
         timestamp,
         data.get("parent_name", ""),
         data.get("phone", ""),
@@ -417,8 +417,16 @@ def save_to_sheet(data: Dict):
         data.get("experience", ""),
         data.get("direction", ""),
         data.get("time", "")
-    ])
-    logger.info(f"Заявка збережена: {data.get('parent_name')}")
+    ]
+    
+    # Знаходимо реальний останній рядок з даними
+    all_values = sheet.get_all_values()
+    next_row = len(all_values) + 1
+    
+    # Вставляємо дані саме там
+    sheet.insert_row(row_data, next_row, value_input_option="USER_ENTERED")
+    
+    logger.info(f"Заявка збережена в рядок {next_row}: {data.get('parent_name')}")
 
 
 async def notify_admin(data: Dict):
